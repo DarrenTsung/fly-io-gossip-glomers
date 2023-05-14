@@ -2,6 +2,8 @@
 #[derive(
     Debug,
     PartialEq,
+    Eq,
+    Hash,
     Clone,
     Copy,
     shrinkwraprs::Shrinkwrap,
@@ -21,6 +23,8 @@ impl From<u32> for MessageID {
 #[derive(
     Debug,
     PartialEq,
+    Eq,
+    Hash,
     Clone,
     shrinkwraprs::Shrinkwrap,
     serde_derive::Serialize,

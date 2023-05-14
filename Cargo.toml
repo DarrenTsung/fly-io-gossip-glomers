@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "echo",
+  "broadcast",
   "maelstrom",
   "unique-ids",
 ]

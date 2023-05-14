@@ -42,6 +42,10 @@ impl maelstrom::App for UniqueIds {
 
         Ok(())
     }
+
+    fn tick<'a>(&mut self, _writer: &mut maelstrom::MessageWriter<'a>) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 fn main() -> anyhow::Result<()> {

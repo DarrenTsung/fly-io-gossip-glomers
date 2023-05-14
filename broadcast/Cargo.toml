@@ -1,0 +1,10 @@
+[package]
+edition = "2021"
+name = "broadcast"
+version = "0.1.0"
+
+[dependencies]
+anyhow = "1.0.71"
+maelstrom = {path = "../maelstrom"}
+serde = "1.0.163"
+serde_derive = "1.0.163"
