@@ -2,4 +2,5 @@
 members = [
   "echo",
   "maelstrom",
+  "unique-ids",
 ]

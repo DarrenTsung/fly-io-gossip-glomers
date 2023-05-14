@@ -1,15 +1,17 @@
+use uuid::Uuid;
+
 #[derive(Debug, PartialEq, Clone, serde_derive::Serialize, serde_derive::Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
-enum EchoPayload {
-    Echo { echo: String },
-    EchoOk { echo: String },
+enum UniqueIdsPayload {
+    Generate,
+    GenerateOk { id: Uuid },
 }
 
-struct Echo {}
+struct UniqueIds {}
 
-impl maelstrom::App for Echo {
-    type Payload = EchoPayload;
+impl maelstrom::App for UniqueIds {
+    type Payload = UniqueIdsPayload;
 
     fn new(_node_id: maelstrom::NodeID, _node_ids: Vec<maelstrom::NodeID>) -> Self {
         Self {}
@@ -26,8 +28,11 @@ impl maelstrom::App for Echo {
         };
 
         match app_payload {
-            EchoPayload::Echo { echo } => {
-                writer.reply_to(&message, EchoPayload::EchoOk { echo: echo.clone() })?;
+            UniqueIdsPayload::Generate => {
+                writer.reply_to(
+                    &message,
+                    UniqueIdsPayload::GenerateOk { id: Uuid::new_v4() },
+                )?;
             }
             _ => {
                 eprintln!("Ignoring non-relevant payload: {app_payload:?}.");
@@ -40,5 +45,5 @@ impl maelstrom::App for Echo {
 }
 
 fn main() -> anyhow::Result<()> {
-    maelstrom::event_loop::<Echo, EchoPayload>()
+    maelstrom::event_loop::<UniqueIds, UniqueIdsPayload>()
 }
