@@ -80,11 +80,6 @@ pub trait App {
     fn tick<'a>(&mut self, writer: &mut MessageWriter<'a>) -> anyhow::Result<()>;
 }
 
-struct AppContext<'a, TApp> {
-    app: TApp,
-    writer: MessageWriter<'a>,
-}
-
 pub fn event_loop<
     TApp: App<Payload = TPayload>,
     TPayload: 'static + Send + Serialize + DeserializeOwned + Debug,
@@ -101,8 +96,23 @@ pub fn event_loop<
         }
     });
 
+    let init_message = message_receiver
+        .recv()
+        .context("Failed to receive first message!")?;
+    let init_message = serde_json::from_str::<Message<InitPayload>>(&init_message)
+        .context("Couldn't deserialize init Message")?;
+    let InitPayload::Init { node_id, node_ids } = &init_message.body.payload else {
+        anyhow::bail!("Did not get Init message as first message, got: {init_message:?}!");
+    };
+    let mut writer = MessageWriter {
+        msg_id: 0.into(),
+        stdout: io::stdout().lock(),
+        node_id: node_id.clone(),
+    };
+    let mut app = TApp::new(node_id.clone(), node_ids.clone());
+    writer.reply_to(&init_message, InitPayload::InitOk)?;
+
     let tick_rate = Duration::from_millis(10);
-    let mut context: Option<AppContext<TApp>> = None;
     let mut last_tick = Instant::now();
     loop {
         let message = match message_receiver.recv_timeout(tick_rate) {
@@ -112,47 +122,22 @@ pub fn event_loop<
                 break;
             }
             Err(RecvTimeoutError::Timeout) => {
-                if let Some(context) = &mut context {
-                    if last_tick.elapsed() >= tick_rate {
-                        context
-                            .app
-                            .tick(&mut context.writer)
-                            .context("App failed to tick")?;
-                        last_tick = Instant::now();
-                    }
+                if last_tick.elapsed() >= tick_rate {
+                    app.tick(&mut writer).context("App failed to tick")?;
+                    last_tick = Instant::now();
                 }
                 continue;
             }
         };
 
         eprintln!("Received message: {message:#?}.");
-        let Some(context) = &mut context else {
-            let message = serde_json::from_str::<Message<InitPayload>>(&message)
-                .context("Couldn't deserialize Message")?;
-            let InitPayload::Init { node_id, node_ids } = &message.body.payload else {
-                anyhow::bail!("Did not get Init message as first message, got: {message:?}!");
-            };
-            let mut inner_context = AppContext {
-                writer: MessageWriter { msg_id: 0.into(), stdout: io::stdout().lock(), node_id: node_id.clone() },
-                app: TApp::new(node_id.clone(), node_ids.clone())
-            };
-            inner_context.writer.reply_to(&message, InitPayload::InitOk)?;
-            context = Some(inner_context);
-            continue;
-        };
-
         let message = serde_json::from_str::<Message<TPayload>>(&message)
             .context("Couldn't deserialize Message")?;
-        context
-            .app
-            .handle(message, &mut context.writer)
+        app.handle(message, &mut writer)
             .context("App failed to handle message")?;
 
         if last_tick.elapsed() >= tick_rate {
-            context
-                .app
-                .tick(&mut context.writer)
-                .context("App failed to tick")?;
+            app.tick(&mut writer).context("App failed to tick")?;
             last_tick = Instant::now();
         }
     }
