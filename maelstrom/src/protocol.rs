@@ -72,26 +72,13 @@ pub struct MessageBody<TPayload> {
     pub in_reply_to: Option<MessageID>,
 
     #[serde(flatten)]
-    pub payload: MessagePayload<TPayload>,
-}
-
-#[derive(Debug, PartialEq, Clone, serde_derive::Serialize, serde_derive::Deserialize)]
-#[serde(untagged)]
-pub enum MessagePayload<TPayload> {
-    Shared(SharedMessagePayload),
-    App(TPayload),
-}
-
-impl<TPayload> From<TPayload> for MessagePayload<TPayload> {
-    fn from(value: TPayload) -> Self {
-        Self::App(value)
-    }
+    pub payload: TPayload,
 }
 
 #[derive(Debug, PartialEq, Clone, serde_derive::Serialize, serde_derive::Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
-pub enum SharedMessagePayload {
+pub enum InitPayload {
     Init {
         node_id: NodeID,
         node_ids: Vec<NodeID>,
@@ -121,7 +108,7 @@ mod tests {
 			}
 		"##
         );
-        let message: Message<()> = serde_json::from_str(&message_json).expect("works");
+        let message: Message<InitPayload> = serde_json::from_str(&message_json).expect("works");
         assert_eq!(
             message,
             Message {
@@ -130,10 +117,10 @@ mod tests {
                 body: MessageBody {
                     msg_id: Some(1.into()),
                     in_reply_to: None,
-                    payload: MessagePayload::Shared(SharedMessagePayload::Init {
+                    payload: InitPayload::Init {
                         node_id: "n3".into(),
                         node_ids: vec!["n1".into(), "n2".into(), "n3".into()]
-                    })
+                    }
                 }
             }
         )

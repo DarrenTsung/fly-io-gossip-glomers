@@ -22,12 +22,7 @@ impl maelstrom::App for UniqueIds {
         message: maelstrom::Message<Self::Payload>,
         writer: &mut maelstrom::MessageWriter,
     ) -> Result<(), anyhow::Error> {
-        let maelstrom::MessagePayload::App(app_payload) = &message.body.payload else {
-            eprintln!("Ignoring non-app payload, got: {message:?}!");
-            return Ok(());
-        };
-
-        match app_payload {
+        match &message.body.payload {
             UniqueIdsPayload::Generate => {
                 writer.reply_to(
                     &message,
@@ -35,7 +30,7 @@ impl maelstrom::App for UniqueIds {
                 )?;
             }
             _ => {
-                eprintln!("Ignoring non-relevant payload: {app_payload:?}.");
+                eprintln!("Ignoring non-relevant payload: {message:?}.");
                 return Ok(());
             }
         }

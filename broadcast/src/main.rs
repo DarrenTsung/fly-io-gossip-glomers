@@ -138,12 +138,7 @@ impl maelstrom::App for Broadcast {
         message: maelstrom::Message<Self::Payload>,
         writer: &mut maelstrom::MessageWriter,
     ) -> Result<(), anyhow::Error> {
-        let maelstrom::MessagePayload::App(app_payload) = &message.body.payload else {
-            eprintln!("Ignoring non-app payload, got: {message:?}!");
-            return Ok(());
-        };
-
-        match app_payload {
+        match &message.body.payload {
             BroadcastPayload::Broadcast {
                 message: message_to_broadcast,
             } => {
@@ -194,7 +189,7 @@ impl maelstrom::App for Broadcast {
                 writer.reply_to(&message, BroadcastPayload::TopologyOk)?;
             }
             _ => {
-                eprintln!("Ignoring non-relevant payload: {app_payload:?}.");
+                eprintln!("Ignoring non-relevant payload: {message:?}.");
                 return Ok(());
             }
         }

@@ -4,7 +4,7 @@ use serde::ser::Serialize;
 
 use crate::protocol::*;
 use std::fmt::Debug;
-use std::io::{self, StdoutLock, Write};
+use std::io::{self, BufRead, StdoutLock, Write};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -32,7 +32,7 @@ impl<'a> MessageWriter<'a> {
     pub fn reply_to<TPayload: Serialize>(
         &mut self,
         received_message: &Message<TPayload>,
-        payload: impl Into<MessagePayload<TPayload>>,
+        payload: TPayload,
     ) -> anyhow::Result<MessageID> {
         let message_id = self.msg_id;
         self.write_message(&Message {
@@ -41,7 +41,7 @@ impl<'a> MessageWriter<'a> {
             body: MessageBody {
                 msg_id: Some(self.msg_id),
                 in_reply_to: received_message.body.msg_id,
-                payload: payload.into(),
+                payload,
             },
         })?;
         Ok(message_id)
@@ -50,7 +50,7 @@ impl<'a> MessageWriter<'a> {
     pub fn send_to<TPayload: Serialize>(
         &mut self,
         node_id: &NodeID,
-        payload: impl Into<MessagePayload<TPayload>>,
+        payload: TPayload,
     ) -> anyhow::Result<MessageID> {
         let message_id = self.msg_id;
         self.write_message(&Message {
@@ -61,7 +61,7 @@ impl<'a> MessageWriter<'a> {
                 // As such, it does not attach a message ID.
                 msg_id: Some(self.msg_id),
                 in_reply_to: None,
-                payload: payload.into(),
+                payload,
             },
         })?;
         Ok(message_id)
@@ -91,10 +91,10 @@ pub fn event_loop<
 >() -> anyhow::Result<()> {
     let (message_sender, message_receiver) = mpsc::channel();
     std::thread::spawn(move || {
-        let messages = serde_json::Deserializer::from_reader(io::stdin().lock())
-            .into_iter::<Message<TPayload>>();
-        for message in messages {
-            if message_sender.send(message).is_err() {
+        let stdin = io::stdin().lock();
+        for line in stdin.lines() {
+            let line = line.expect("can read line");
+            if message_sender.send(line).is_err() {
                 eprintln!("Message thread could not send message (receiver gone?). Exiting.");
                 break;
             }
@@ -125,21 +125,24 @@ pub fn event_loop<
             }
         };
 
-        let message = message.context("Couldn't deserialize Message from stdin")?;
         eprintln!("Received message: {message:#?}.");
         let Some(context) = &mut context else {
-            let MessagePayload::Shared(SharedMessagePayload::Init { node_id, node_ids }) = &message.body.payload else {
+            let message = serde_json::from_str::<Message<InitPayload>>(&message)
+                .context("Couldn't deserialize Message")?;
+            let InitPayload::Init { node_id, node_ids } = &message.body.payload else {
                 anyhow::bail!("Did not get Init message as first message, got: {message:?}!");
             };
             let mut inner_context = AppContext {
                 writer: MessageWriter { msg_id: 0.into(), stdout: io::stdout().lock(), node_id: node_id.clone() },
                 app: TApp::new(node_id.clone(), node_ids.clone())
             };
-            inner_context.writer.reply_to(&message, MessagePayload::Shared(SharedMessagePayload::InitOk))?;
+            inner_context.writer.reply_to(&message, InitPayload::InitOk)?;
             context = Some(inner_context);
             continue;
         };
 
+        let message = serde_json::from_str::<Message<TPayload>>(&message)
+            .context("Couldn't deserialize Message")?;
         context
             .app
             .handle(message, &mut context.writer)

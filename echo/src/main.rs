@@ -20,17 +20,12 @@ impl maelstrom::App for Echo {
         message: maelstrom::Message<Self::Payload>,
         writer: &mut maelstrom::MessageWriter,
     ) -> Result<(), anyhow::Error> {
-        let maelstrom::MessagePayload::App(app_payload) = &message.body.payload else {
-            eprintln!("Ignoring non-app payload, got: {message:?}!");
-            return Ok(());
-        };
-
-        match app_payload {
+        match &message.body.payload {
             EchoPayload::Echo { echo } => {
                 writer.reply_to(&message, EchoPayload::EchoOk { echo: echo.clone() })?;
             }
             _ => {
-                eprintln!("Ignoring non-relevant payload: {app_payload:?}.");
+                eprintln!("Ignoring non-relevant payload: {message:?}.");
                 return Ok(());
             }
         }
