@@ -38,6 +38,26 @@ impl<T: Into<String>> From<T> for NodeID {
     }
 }
 
+impl NodeID {
+    /// "Nodes n1, n2, n3, etc. are instances of the binary you pass to Maelstrom. These
+    /// nodes implement whatever distributed algorithm you're trying to build: for
+    /// instance, a key-value store. You can think of these as servers, in that they
+    /// accept requests from clients and send back responses."
+    ///
+    /// https://github.com/jepsen-io/maelstrom/blob/main/doc/protocol.md#nodes-and-networks
+    pub fn is_server(&self) -> bool {
+        self.starts_with("n")
+    }
+
+    /// "Nodes c1, c2, c3, etc. are Maelstrom's internal clients. Clients send requests to
+    /// servers and expect responses back, via a simple asynchronous RPC protocol."
+    ///
+    /// https://github.com/jepsen-io/maelstrom/blob/main/doc/protocol.md#nodes-and-networks
+    pub fn is_client(&self) -> bool {
+        self.starts_with("c")
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, serde_derive::Serialize, serde_derive::Deserialize)]
 pub struct Message<TPayload> {
     pub src: NodeID,

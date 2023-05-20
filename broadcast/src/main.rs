@@ -28,10 +28,12 @@ struct AckContext {
 }
 
 struct Broadcast {
-    node_id: NodeID,
     messages_seen: HashSet<u32>,
     neighbor_messages_not_acked: HashMap<NodeID, HashMap<u32, AckContext>>,
     neighbors: Vec<NodeID>,
+    /// Determines whether to always broadcast to neighbors or only when
+    /// receiving a message from a client.
+    always_broadcast: bool,
 }
 
 impl Broadcast {
@@ -67,12 +69,31 @@ impl Broadcast {
 impl maelstrom::App for Broadcast {
     type Payload = BroadcastPayload;
 
-    fn new(node_id: maelstrom::NodeID, _node_ids: Vec<maelstrom::NodeID>) -> Self {
+    fn new(node_id: maelstrom::NodeID, node_ids: Vec<maelstrom::NodeID>) -> Self {
+        let chunks = node_ids.chunks(node_ids.len() / 5).collect::<Vec<_>>();
+        let Some(chunk_index) = node_ids.chunks(node_ids.len() / 5).position(|c| c.contains(&node_id)) else {
+            panic!("Expected node_id ({node_id:?}) to be in list of node_ids ({node_ids:?})!");
+        };
+        let chunk = &chunks[chunk_index];
+
+        let index_in_chunk = chunk.iter().position(|n| n == &node_id).expect("exists");
+        let (neighbors, always_broadcast) = if index_in_chunk == 0 {
+            let next_chunk = &chunks[(chunk_index + 1) % chunks.len()];
+            (next_chunk, true)
+        } else {
+            (chunk, false)
+        };
+
         Self {
-            node_id,
             messages_seen: HashSet::new(),
             neighbor_messages_not_acked: HashMap::new(),
-            neighbors: Vec::new(),
+            // Don't want to include self in neighbors.
+            neighbors: neighbors
+                .iter()
+                .filter(|n| *n != &node_id)
+                .cloned()
+                .collect(),
+            always_broadcast,
         }
     }
 
@@ -92,8 +113,10 @@ impl maelstrom::App for Broadcast {
             } => {
                 let inserted = self.messages_seen.insert(*message_to_broadcast);
                 writer.reply_to(&message, BroadcastPayload::BroadcastOk)?;
-                // Broadcast to neighbors if this was newly seen.
-                if inserted {
+                // Broadcast to neighbors if this was newly seen. Servers only broadcast
+                // messages received from clients (unless they are configured to always
+                // broadcast, i.e. when they are a link to the next chunk of servers).
+                if inserted && (message.src.is_client() || self.always_broadcast) {
                     for neighbor in self.neighbors.clone() {
                         self.send_to_neighbor(writer, &neighbor, *message_to_broadcast)?;
                     }
@@ -132,10 +155,8 @@ impl maelstrom::App for Broadcast {
                     },
                 )?;
             }
-            BroadcastPayload::Topology { topology } => {
-                if let Some(neighbors) = topology.get(&self.node_id) {
-                    self.neighbors = neighbors.clone();
-                }
+            BroadcastPayload::Topology { topology: _ } => {
+                // Ignore topology, we constructed our own topology at initialization.
                 writer.reply_to(&message, BroadcastPayload::TopologyOk)?;
             }
             _ => {
