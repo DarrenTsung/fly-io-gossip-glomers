@@ -6,7 +6,7 @@ use crate::protocol::*;
 use std::fmt::Debug;
 use std::io::{self, StdoutLock, Write};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub struct MessageWriter<'a> {
     msg_id: MessageID,
@@ -101,9 +101,11 @@ pub fn event_loop<
         }
     });
 
+    let tick_rate = Duration::from_millis(10);
     let mut context: Option<AppContext<TApp>> = None;
+    let mut last_tick = Instant::now();
     loop {
-        let message = match message_receiver.recv_timeout(Duration::from_millis(100)) {
+        let message = match message_receiver.recv_timeout(tick_rate) {
             Ok(message) => message,
             Err(RecvTimeoutError::Disconnected) => {
                 eprintln!("Message thread finished unexpectedly? Closing event loop.");
@@ -111,10 +113,13 @@ pub fn event_loop<
             }
             Err(RecvTimeoutError::Timeout) => {
                 if let Some(context) = &mut context {
-                    context
-                        .app
-                        .tick(&mut context.writer)
-                        .context("App failed to tick")?;
+                    if last_tick.elapsed() >= tick_rate {
+                        context
+                            .app
+                            .tick(&mut context.writer)
+                            .context("App failed to tick")?;
+                        last_tick = Instant::now();
+                    }
                 }
                 continue;
             }
@@ -139,6 +144,14 @@ pub fn event_loop<
             .app
             .handle(message, &mut context.writer)
             .context("App failed to handle message")?;
+
+        if last_tick.elapsed() >= tick_rate {
+            context
+                .app
+                .tick(&mut context.writer)
+                .context("App failed to tick")?;
+            last_tick = Instant::now();
+        }
     }
 
     Ok(())

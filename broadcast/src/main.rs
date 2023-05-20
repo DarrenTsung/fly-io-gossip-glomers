@@ -12,6 +12,10 @@ enum BroadcastPayload {
         message: u32,
     },
     BroadcastOk,
+    BroadcastBatched {
+        messages: Vec<u32>,
+    },
+    BroadcastBatchedOk,
     Read,
     ReadOk {
         messages: Vec<u32>,
@@ -29,26 +33,41 @@ struct AckContext {
 
 struct Broadcast {
     messages_seen: HashSet<u32>,
-    neighbor_messages_not_acked: HashMap<NodeID, HashMap<u32, AckContext>>,
     neighbors: Vec<NodeID>,
     /// Determines whether to always broadcast to neighbors or only when
     /// receiving a message from a client.
     always_broadcast: bool,
+
+    neighbor_messages_not_acked: HashMap<NodeID, HashMap<Vec<u32>, AckContext>>,
+    batched_sends_to_neighbors: HashMap<NodeID, (Instant, Vec<u32>)>,
 }
 
 impl Broadcast {
-    fn send_to_neighbor(
+    fn prepare_send_to_neighbor(&mut self, neighbor: NodeID, message: u32) {
+        self.batched_sends_to_neighbors
+            .entry(neighbor)
+            .or_insert_with(|| (Instant::now(), Vec::new()))
+            .1
+            .push(message);
+    }
+
+    fn batched_send_to_neighbor(
         &mut self,
         writer: &mut maelstrom::MessageWriter,
-        neighbor: &NodeID,
-        message: u32,
+        neighbor: NodeID,
+        messages: Vec<u32>,
     ) -> anyhow::Result<()> {
-        let message_id = writer.send_to(neighbor, BroadcastPayload::Broadcast { message })?;
+        let message_id = writer.send_to(
+            &neighbor,
+            BroadcastPayload::BroadcastBatched {
+                messages: messages.clone(),
+            },
+        )?;
         match self
             .neighbor_messages_not_acked
-            .entry(neighbor.clone())
+            .entry(neighbor)
             .or_insert_with(HashMap::new)
-            .entry(message)
+            .entry(messages)
         {
             Entry::Occupied(mut entry) => {
                 entry.get_mut().time_sent = Instant::now();
@@ -63,6 +82,22 @@ impl Broadcast {
         }
 
         Ok(())
+    }
+
+    fn handle_message(
+        &mut self,
+        message: &maelstrom::Message<BroadcastPayload>,
+        message_to_broadcast: u32,
+    ) {
+        let inserted = self.messages_seen.insert(message_to_broadcast);
+        // Broadcast to neighbors if this was newly seen. Servers only broadcast
+        // messages received from clients (unless they are configured to always
+        // broadcast, i.e. when they are a link to the next chunk of servers).
+        if inserted && (message.src.is_client() || self.always_broadcast) {
+            for neighbor in self.neighbors.clone() {
+                self.prepare_send_to_neighbor(neighbor, message_to_broadcast);
+            }
+        }
     }
 }
 
@@ -94,6 +129,7 @@ impl maelstrom::App for Broadcast {
                 .cloned()
                 .collect(),
             always_broadcast,
+            batched_sends_to_neighbors: HashMap::new(),
         }
     }
 
@@ -111,18 +147,22 @@ impl maelstrom::App for Broadcast {
             BroadcastPayload::Broadcast {
                 message: message_to_broadcast,
             } => {
-                let inserted = self.messages_seen.insert(*message_to_broadcast);
+                self.handle_message(&message, *message_to_broadcast);
                 writer.reply_to(&message, BroadcastPayload::BroadcastOk)?;
-                // Broadcast to neighbors if this was newly seen. Servers only broadcast
-                // messages received from clients (unless they are configured to always
-                // broadcast, i.e. when they are a link to the next chunk of servers).
-                if inserted && (message.src.is_client() || self.always_broadcast) {
-                    for neighbor in self.neighbors.clone() {
-                        self.send_to_neighbor(writer, &neighbor, *message_to_broadcast)?;
-                    }
-                }
             }
             BroadcastPayload::BroadcastOk => {
+                // BroadcastOk is only in response to client messages, server to server
+                // communication is always via BroadcastBatched / BroadcastBatchedOk.
+            }
+            BroadcastPayload::BroadcastBatched {
+                messages: messages_to_broadcast,
+            } => {
+                for message_to_broadcast in messages_to_broadcast {
+                    self.handle_message(&message, *message_to_broadcast);
+                }
+                writer.reply_to(&message, BroadcastPayload::BroadcastBatchedOk)?;
+            }
+            BroadcastPayload::BroadcastBatchedOk => {
                 let neighbor_messages = self
                     .neighbor_messages_not_acked
                     .entry(message.src)
@@ -130,7 +170,7 @@ impl maelstrom::App for Broadcast {
                 let mut message_found = None;
                 for (message_key, ack_context) in neighbor_messages.iter_mut() {
                     if message.body.in_reply_to == Some(ack_context.message_id) {
-                        message_found = Some(*message_key);
+                        message_found = Some(message_key.clone());
                         break;
                     }
                 }
@@ -138,14 +178,8 @@ impl maelstrom::App for Broadcast {
                     neighbor_messages.remove(&message_found);
                 }
             }
-            BroadcastPayload::ReadOk { messages } => {
-                let neighbor_messages = self
-                    .neighbor_messages_not_acked
-                    .entry(message.src)
-                    .or_insert_with(HashMap::new);
-                for message in messages {
-                    neighbor_messages.remove(message);
-                }
+            BroadcastPayload::ReadOk { messages: _ } => {
+                // Nothing to do with ReadOks.
             }
             BroadcastPayload::Read => {
                 writer.reply_to(
@@ -169,16 +203,30 @@ impl maelstrom::App for Broadcast {
     }
 
     fn tick<'a>(&mut self, writer: &mut maelstrom::MessageWriter<'a>) -> anyhow::Result<()> {
+        let mut keys_to_remove = vec![];
+        for (neighbor, (start_time, messages)) in self.batched_sends_to_neighbors.clone() {
+            if start_time.elapsed() < Duration::from_millis(100) {
+                continue;
+            }
+
+            keys_to_remove.push(neighbor.clone());
+            self.batched_send_to_neighbor(writer, neighbor, messages)?;
+        }
+        for key in keys_to_remove {
+            self.batched_sends_to_neighbors.remove(&key);
+        }
+
+        // Resend logic.
         let mut resend = vec![];
         for (neighbor, messages_not_acked) in &self.neighbor_messages_not_acked {
-            for (message, ack_context) in messages_not_acked {
+            for (messages, ack_context) in messages_not_acked {
                 if ack_context.time_sent.elapsed() >= Duration::from_millis(500) {
-                    resend.push((neighbor.clone(), *message));
+                    resend.push((neighbor.clone(), messages.clone()));
                 }
             }
         }
-        for (neighbor, message) in resend {
-            self.send_to_neighbor(writer, &neighbor, message)?;
+        for (neighbor, messages) in resend {
+            self.batched_send_to_neighbor(writer, neighbor, messages)?;
         }
         Ok(())
     }
