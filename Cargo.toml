@@ -2,6 +2,7 @@
 members = [
   "echo",
   "broadcast",
+  "g-counter",
   "maelstrom",
   "unique-ids",
 ]

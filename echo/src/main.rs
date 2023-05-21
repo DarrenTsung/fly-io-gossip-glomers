@@ -8,6 +8,7 @@ enum EchoPayload {
 
 struct Echo {}
 
+#[async_trait::async_trait]
 impl maelstrom::App for Echo {
     type Payload = EchoPayload;
 
@@ -15,10 +16,10 @@ impl maelstrom::App for Echo {
         Self {}
     }
 
-    fn handle(
+    async fn handle(
         &mut self,
         message: maelstrom::Message<Self::Payload>,
-        writer: &mut maelstrom::MessageWriter,
+        writer: &maelstrom::MessageWriter,
     ) -> Result<(), anyhow::Error> {
         match &message.body.payload {
             EchoPayload::Echo { echo } => {
@@ -33,7 +34,7 @@ impl maelstrom::App for Echo {
         Ok(())
     }
 
-    fn tick<'a>(&mut self, _writer: &mut maelstrom::MessageWriter) -> anyhow::Result<()> {
+    fn tick(&mut self, _writer: &maelstrom::MessageWriter) -> anyhow::Result<()> {
         Ok(())
     }
 }

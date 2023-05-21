@@ -1,3 +1,6 @@
+use anyhow::Context;
+use serde::de::DeserializeOwned;
+
 /// A locally-unique ID for the message, e.g. 5.
 #[derive(
     Debug,
@@ -66,6 +69,18 @@ pub struct Message<TPayload> {
     pub body: MessageBody<TPayload>,
 }
 
+impl Message<serde_json::Value> {
+    pub fn into_payload<TOtherPayload: DeserializeOwned>(
+        self,
+    ) -> anyhow::Result<Message<TOtherPayload>> {
+        Ok(Message {
+            src: self.src,
+            dst: self.dst,
+            body: self.body.into_payload()?,
+        })
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, serde_derive::Serialize, serde_derive::Deserialize)]
 pub struct MessageBody<TPayload> {
     pub msg_id: Option<MessageID>,
@@ -73,6 +88,19 @@ pub struct MessageBody<TPayload> {
 
     #[serde(flatten)]
     pub payload: TPayload,
+}
+
+impl MessageBody<serde_json::Value> {
+    pub fn into_payload<TOtherPayload: DeserializeOwned>(
+        self,
+    ) -> anyhow::Result<MessageBody<TOtherPayload>> {
+        Ok(MessageBody {
+            msg_id: self.msg_id,
+            in_reply_to: self.in_reply_to,
+            payload: serde_json::from_value::<TOtherPayload>(self.payload)
+                .context("Couldn't convert payload type!")?,
+        })
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, serde_derive::Serialize, serde_derive::Deserialize)]

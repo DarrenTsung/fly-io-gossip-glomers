@@ -1,9 +1,11 @@
 use anyhow::Context;
 use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::protocol::*;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io::{self, BufRead, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -12,16 +14,21 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::time::timeout;
 
+mod services;
+pub use services::*;
+
 #[derive(Debug, Clone)]
 pub struct MessageWriter {
     msg_id: Arc<AtomicU32>,
     msg_sender: UnboundedSender<String>,
+    response_callback_sender:
+        UnboundedSender<(MessageID, oneshot::Sender<Message<serde_json::Value>>)>,
     node_id: NodeID,
 }
 
 impl MessageWriter {
     fn write_message<TPayload: Serialize>(
-        &mut self,
+        &self,
         message: &Message<TPayload>,
     ) -> anyhow::Result<()> {
         self.msg_sender
@@ -31,7 +38,7 @@ impl MessageWriter {
     }
 
     pub fn reply_to<TPayload: Serialize>(
-        &mut self,
+        &self,
         received_message: &Message<TPayload>,
         payload: TPayload,
     ) -> anyhow::Result<MessageID> {
@@ -49,7 +56,7 @@ impl MessageWriter {
     }
 
     pub fn send_to<TPayload: Serialize>(
-        &mut self,
+        &self,
         node_id: &NodeID,
         payload: TPayload,
     ) -> anyhow::Result<MessageID> {
@@ -65,18 +72,42 @@ impl MessageWriter {
         })?;
         Ok(message_id)
     }
+
+    pub async fn send_and_receive<TPayload: Serialize, TPayloadResponse: DeserializeOwned>(
+        &self,
+        node_id: &NodeID,
+        payload: TPayload,
+    ) -> anyhow::Result<Message<TPayloadResponse>> {
+        let message_id = self.msg_id.fetch_add(1, Ordering::SeqCst).into();
+        let (sender, receiver) = oneshot::channel();
+        self.response_callback_sender
+            .send((message_id, sender))
+            .context("RPC callback receiver gone.")?;
+        self.write_message(&Message {
+            src: self.node_id.clone(),
+            dst: node_id.clone(),
+            body: MessageBody {
+                msg_id: Some(message_id),
+                in_reply_to: None,
+                payload,
+            },
+        })?;
+        let message = receiver.await.context("RPC sender dropped?")?;
+        message.into_payload()
+    }
 }
 
+#[async_trait::async_trait]
 pub trait App {
     type Payload;
 
     fn new(node_id: NodeID, node_ids: Vec<NodeID>) -> Self;
-    fn handle<'a>(
+    async fn handle(
         &mut self,
         message: Message<Self::Payload>,
-        writer: &mut MessageWriter,
+        writer: &MessageWriter,
     ) -> anyhow::Result<()>;
-    fn tick<'a>(&mut self, writer: &mut MessageWriter) -> anyhow::Result<()>;
+    fn tick(&mut self, writer: &MessageWriter) -> anyhow::Result<()>;
 }
 
 pub async fn event_loop<
@@ -120,15 +151,18 @@ pub async fn event_loop<
         Ok(())
     });
 
+    let (response_callback_sender, mut response_callback_receiver) = mpsc::unbounded_channel();
     let mut writer = MessageWriter {
         msg_id: Arc::new(AtomicU32::new(0)),
         msg_sender: msg_writer_sender,
         node_id: node_id.clone(),
+        response_callback_sender,
     };
     let mut app = TApp::new(node_id.clone(), node_ids.clone());
     writer.reply_to(&init_message, InitPayload::InitOk)?;
 
-    let (app_message_sender, mut app_message_receiver) = mpsc::unbounded_channel::<String>();
+    let (app_message_sender, mut app_message_receiver) =
+        mpsc::unbounded_channel::<Message<serde_json::Value>>();
     let app_task_handle: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
         let tick_rate = Duration::from_millis(10);
         let mut last_tick = Instant::now();
@@ -148,10 +182,9 @@ pub async fn event_loop<
                 }
             };
 
-            eprintln!("Received message: {message:#?}.");
-            let message = serde_json::from_str::<Message<TPayload>>(&message)
-                .context("Couldn't deserialize Message")?;
+            let message = message.into_payload::<TPayload>()?;
             app.handle(message, &mut writer)
+                .await
                 .context("App failed to handle message")?;
 
             if last_tick.elapsed() >= tick_rate {
@@ -162,8 +195,28 @@ pub async fn event_loop<
         Ok(())
     });
 
+    let mut response_callbacks = HashMap::new();
     while let Some(message) = message_receiver.recv().await {
-        // TODO: handle other types of messages (e.g. services) here.
+        while let Ok((message_id, response_callback)) = response_callback_receiver.try_recv() {
+            let previous_value = response_callbacks.insert(message_id, response_callback);
+            assert!(
+                previous_value.is_none(),
+                "Received multiple response callbacks for same message id, programmer error?"
+            );
+        }
+
+        let message = serde_json::from_str::<Message<serde_json::Value>>(&message)
+            .context("Couldn't deserialize Message")?;
+        eprintln!("Received message: {message:?}.");
+        if let Some(in_reply_to) = message.body.in_reply_to {
+            if let Some(response_callback) = response_callbacks.remove(&in_reply_to) {
+                if response_callback.send(message).is_err() {
+                    anyhow::bail!("Response callback send failed!");
+                }
+                continue;
+            }
+        }
+
         app_message_sender
             .send(message)
             .context("Failed to send Message to app task!")?;

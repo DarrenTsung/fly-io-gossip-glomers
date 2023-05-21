@@ -53,7 +53,7 @@ impl Broadcast {
 
     fn batched_send_to_neighbor(
         &mut self,
-        writer: &mut maelstrom::MessageWriter,
+        writer: &maelstrom::MessageWriter,
         neighbor: NodeID,
         messages: Vec<u32>,
     ) -> anyhow::Result<()> {
@@ -101,6 +101,7 @@ impl Broadcast {
     }
 }
 
+#[async_trait::async_trait]
 impl maelstrom::App for Broadcast {
     type Payload = BroadcastPayload;
 
@@ -133,10 +134,10 @@ impl maelstrom::App for Broadcast {
         }
     }
 
-    fn handle(
+    async fn handle(
         &mut self,
         message: maelstrom::Message<Self::Payload>,
-        writer: &mut maelstrom::MessageWriter,
+        writer: &maelstrom::MessageWriter,
     ) -> Result<(), anyhow::Error> {
         match &message.body.payload {
             BroadcastPayload::Broadcast {
@@ -197,7 +198,7 @@ impl maelstrom::App for Broadcast {
         Ok(())
     }
 
-    fn tick<'a>(&mut self, writer: &mut maelstrom::MessageWriter) -> anyhow::Result<()> {
+    fn tick(&mut self, writer: &maelstrom::MessageWriter) -> anyhow::Result<()> {
         let mut keys_to_remove = vec![];
         for (neighbor, (start_time, messages)) in self.batched_sends_to_neighbors.clone() {
             if start_time.elapsed() < Duration::from_millis(100) {
