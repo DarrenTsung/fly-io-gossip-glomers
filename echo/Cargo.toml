@@ -8,3 +8,4 @@ anyhow = "1.0.71"
 maelstrom = {path = "../maelstrom"}
 serde = "1.0.163"
 serde_derive = "1.0.163"
+tokio = {version = "1.28.1", features = ["full"]}
