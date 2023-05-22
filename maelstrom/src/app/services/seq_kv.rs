@@ -1,5 +1,6 @@
 use crate::MessageWriter;
 use serde::{de::DeserializeOwned, *};
+use std::fmt::Debug;
 
 pub struct SeqKV<'a> {
     message_writer: &'a MessageWriter,
@@ -12,7 +13,7 @@ impl<'a> SeqKV<'a> {
         Self { message_writer }
     }
 
-    pub async fn read<K: Serialize, V: Serialize + DeserializeOwned>(
+    pub async fn read<K: Serialize + Debug, V: Serialize + DeserializeOwned>(
         &self,
         key: K,
     ) -> anyhow::Result<Option<V>> {
@@ -31,7 +32,11 @@ impl<'a> SeqKV<'a> {
         })
     }
 
-    pub async fn write<K: Serialize, V: Serialize>(&self, key: K, value: V) -> anyhow::Result<()> {
+    pub async fn write<K: Serialize + Debug, V: Serialize + Debug>(
+        &self,
+        key: K,
+        value: V,
+    ) -> anyhow::Result<()> {
         let response = self
             .message_writer
             .send_and_receive::<KVPayload<K, V>, KVPayload<(), ()>>(
@@ -43,6 +48,32 @@ impl<'a> SeqKV<'a> {
             anyhow::bail!("Expected WriteOk in response to Write.");
         };
         Ok(())
+    }
+
+    pub async fn compare_and_swap<K: Serialize + Debug, V: Serialize + Debug>(
+        &self,
+        key: K,
+        from: V,
+        to: V,
+    ) -> anyhow::Result<bool> {
+        let response = self
+            .message_writer
+            .send_and_receive::<KVPayload<K, V>, KVPayload<(), ()>>(
+                &Self::SEQ_KV_NODE_ID.into(),
+                KVPayload::CompareAndSet {
+                    key,
+                    from,
+                    to,
+                    create_if_not_exists: Some(true),
+                },
+            )
+            .await?;
+        Ok(match response.body.payload {
+            // precondition-failed
+            KVPayload::Error { code, text: _ } if code == 22 => false,
+            KVPayload::CompareAndSetOk => true,
+            _ => anyhow::bail!("Expected CompareAndSetOk in response to CompareAndSet."),
+        })
     }
 }
 

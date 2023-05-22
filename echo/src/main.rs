@@ -34,7 +34,7 @@ impl maelstrom::App for Echo {
         Ok(())
     }
 
-    fn tick(&mut self, _writer: &maelstrom::MessageWriter) -> anyhow::Result<()> {
+    async fn tick(&mut self, _writer: &maelstrom::MessageWriter) -> anyhow::Result<()> {
         Ok(())
     }
 }

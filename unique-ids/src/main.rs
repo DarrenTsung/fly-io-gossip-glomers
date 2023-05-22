@@ -39,7 +39,7 @@ impl maelstrom::App for UniqueIds {
         Ok(())
     }
 
-    fn tick(&mut self, _writer: &maelstrom::MessageWriter) -> anyhow::Result<()> {
+    async fn tick(&mut self, _writer: &maelstrom::MessageWriter) -> anyhow::Result<()> {
         Ok(())
     }
 }

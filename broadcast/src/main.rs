@@ -198,7 +198,7 @@ impl maelstrom::App for Broadcast {
         Ok(())
     }
 
-    fn tick(&mut self, writer: &maelstrom::MessageWriter) -> anyhow::Result<()> {
+    async fn tick(&mut self, writer: &maelstrom::MessageWriter) -> anyhow::Result<()> {
         let mut keys_to_remove = vec![];
         for (neighbor, (start_time, messages)) in self.batched_sends_to_neighbors.clone() {
             if start_time.elapsed() < Duration::from_millis(100) {

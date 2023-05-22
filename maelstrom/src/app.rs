@@ -27,17 +27,18 @@ pub struct MessageWriter {
 }
 
 impl MessageWriter {
-    fn write_message<TPayload: Serialize>(
+    fn write_message<TPayload: Debug + Serialize>(
         &self,
         message: &Message<TPayload>,
     ) -> anyhow::Result<()> {
+        eprintln!("\tSending message: {message:?}.");
         self.msg_sender
             .send(serde_json::to_string(&message).context("Failed to serialize Message")?)
             .context("Could not send to msg_writer task!")?;
         Ok(())
     }
 
-    pub fn reply_to<TPayload: Serialize>(
+    pub fn reply_to<TPayload: Debug + Serialize>(
         &self,
         received_message: &Message<TPayload>,
         payload: TPayload,
@@ -55,7 +56,7 @@ impl MessageWriter {
         Ok(message_id)
     }
 
-    pub fn send_to<TPayload: Serialize>(
+    pub fn send_to<TPayload: Debug + Serialize>(
         &self,
         node_id: &NodeID,
         payload: TPayload,
@@ -73,7 +74,10 @@ impl MessageWriter {
         Ok(message_id)
     }
 
-    pub async fn send_and_receive<TPayload: Serialize, TPayloadResponse: DeserializeOwned>(
+    pub async fn send_and_receive<
+        TPayload: Debug + Serialize,
+        TPayloadResponse: DeserializeOwned,
+    >(
         &self,
         node_id: &NodeID,
         payload: TPayload,
@@ -107,7 +111,7 @@ pub trait App {
         message: Message<Self::Payload>,
         writer: &MessageWriter,
     ) -> anyhow::Result<()>;
-    fn tick(&mut self, writer: &MessageWriter) -> anyhow::Result<()>;
+    async fn tick(&mut self, writer: &MessageWriter) -> anyhow::Result<()>;
 }
 
 pub async fn event_loop<
@@ -175,7 +179,7 @@ pub async fn event_loop<
                 }
                 Err(_elapsed) => {
                     if last_tick.elapsed() >= tick_rate {
-                        app.tick(&mut writer).context("App failed to tick")?;
+                        app.tick(&mut writer).await.context("App failed to tick")?;
                         last_tick = Instant::now();
                     }
                     continue;
@@ -188,7 +192,7 @@ pub async fn event_loop<
                 .context("App failed to handle message")?;
 
             if last_tick.elapsed() >= tick_rate {
-                app.tick(&mut writer).context("App failed to tick")?;
+                app.tick(&mut writer).await.context("App failed to tick")?;
                 last_tick = Instant::now();
             }
         }
